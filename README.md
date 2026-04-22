@@ -9,6 +9,8 @@
 > 🇬🇧 Working ESPHome configuration for the new ESP32 X8 Relay board (Type-C version) with shared bus via 74HC595/74HC165 shift registers.
 
 ---
+<img width="1422" height="971" alt="image" src="https://github.com/user-attachments/assets/bde5d000-f479-4f2b-841a-b866ab318922" />
+
 
 ## 🇫🇷 Description (Français)
 
