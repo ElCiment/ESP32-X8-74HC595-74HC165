@@ -71,8 +71,8 @@ Les entrées sont **optocouplées et attendent une tension**, pas un contact sec
 #### 2. Cloner le dépôt
 
 ```bash
-git clone https://github.com/VOTRE-USER/esp32-x8-relay-esphome.git
-cd esp32-x8-relay-esphome
+git clone https://github.com/ElCiment/ESP32-X8-74HC595-74HC165.git
+cd ESP32-X8-74HC595-74HC165
 ```
 
 #### 3. Configurer vos secrets
