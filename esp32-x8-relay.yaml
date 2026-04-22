@@ -1,0 +1,316 @@
+# ============================================================
+# ESP32 X8 Relay Board - LECTURE 74HC165 CORRIGEE
+# ============================================================
+
+substitutions:
+  device_name: "esp32-x8-relay"
+  friendly_name: "ESP32 X8 Relay"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -10
+    then:
+      - lambda: 'ESP_LOGI("boot", "===== Demarrage =====");'
+      - output.turn_on: sr_enable
+      - lambda: |-
+          id(relay_state) = 0x00;
+          const uint8_t PIN_RCK = 25;
+          const uint8_t PIN_SCK = 26;
+          const uint8_t PIN_DATA = 33;
+          pinMode(PIN_RCK, OUTPUT);
+          pinMode(PIN_SCK, OUTPUT);
+          pinMode(PIN_DATA, OUTPUT);
+          digitalWrite(PIN_RCK, LOW);
+          shiftOut(PIN_DATA, PIN_SCK, MSBFIRST, ~0x00);
+          digitalWrite(PIN_RCK, HIGH);
+          ESP_LOGI("boot", "===== Relais a OFF =====");
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "configme123"
+
+captive_portal:
+web_server:
+  port: 80
+  version: 3
+logger:
+  level: WARN
+api:
+  encryption:
+    key: !secret api_encryption_key
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+globals:
+  - id: relay_state
+    type: uint8_t
+    restore_value: no
+    initial_value: '0x00'
+  - id: last_inputs
+    type: uint8_t
+    initial_value: '0xFF'
+
+output:
+  - platform: gpio
+    pin:
+      number: GPIO13
+      inverted: true
+    id: sr_enable
+
+script:
+  - id: write_relays
+    then:
+      - lambda: |-
+          const uint8_t PIN_RCK = 25;
+          const uint8_t PIN_SCK = 26;
+          const uint8_t PIN_DATA = 33;
+          pinMode(PIN_RCK, OUTPUT);
+          pinMode(PIN_SCK, OUTPUT);
+          pinMode(PIN_DATA, OUTPUT);
+          digitalWrite(PIN_RCK, LOW);
+          shiftOut(PIN_DATA, PIN_SCK, MSBFIRST, ~id(relay_state));
+          digitalWrite(PIN_RCK, HIGH);
+
+interval:
+  # Heartbeat 1s avec valeur en clair
+  - interval: 60s
+    then:
+      - lambda: |-
+            ESP_LOGI("heartbeat", "Alive");
+
+  # Lecture des entrees - SEQUENCE 74HC165 STRICTE
+  - interval: 100ms
+    then:
+      - lambda: |-
+          const uint8_t PIN_RCK = 25;
+          const uint8_t PIN_SCK = 26;
+          const uint8_t PIN_DIN = 27;
+          const uint8_t PIN_DATA_OUT = 33;
+
+          pinMode(PIN_RCK, OUTPUT);
+          pinMode(PIN_SCK, OUTPUT);
+          pinMode(PIN_DIN, INPUT);
+          pinMode(PIN_DATA_OUT, OUTPUT);
+
+          // === LATCH du 74HC165 ===
+          // Quand RCK passe de LOW à HIGH, les entrées sont capturées
+          // (alors que pour le 74HC595, le LATCH se fait sur LOW->HIGH après le shift)
+          digitalWrite(PIN_SCK, LOW);
+          delayMicroseconds(5);
+          digitalWrite(PIN_RCK, LOW);     // commande PL=LOW => load parallèle
+          delayMicroseconds(20);           // attendre le load
+          digitalWrite(PIN_RCK, HIGH);    // PL=HIGH => mode shift
+          delayMicroseconds(20);
+
+          // === LECTURE 8 BITS ===
+          // IMPORTANT: pour le 74HC165, le premier bit (Q7=DS7) est DEJA présent
+          // sur la sortie SO dès le LATCH. Il faut lire AVANT le premier clock.
+          uint8_t v = 0;
+          for (int i = 0; i < 8; i++) {
+            // Lire le bit AVANT de clocker
+            if (digitalRead(PIN_DIN)) {
+              v |= (1 << (7 - i));
+            }
+            // Pulse de clock pour faire avancer le registre
+            digitalWrite(PIN_SCK, HIGH);
+            delayMicroseconds(10);
+            digitalWrite(PIN_SCK, LOW);
+            delayMicroseconds(10);
+          }
+
+          // === RAFRAICHIR LES RELAIS (bus partage) ===
+          digitalWrite(PIN_RCK, LOW);
+          shiftOut(PIN_DATA_OUT, PIN_SCK, MSBFIRST, ~id(relay_state));
+          digitalWrite(PIN_RCK, HIGH);
+
+          // === GESTION DES CHANGEMENTS ===
+          if (v != id(last_inputs)) {
+            ESP_LOGI("inputs", ">>> CHANGEMENT! 0x%02X -> 0x%02X (bin: %c%c%c%c%c%c%c%c)",
+              id(last_inputs), v,
+              (v&0x80)?'1':'0', (v&0x40)?'1':'0',
+              (v&0x20)?'1':'0', (v&0x10)?'1':'0',
+              (v&0x08)?'1':'0', (v&0x04)?'1':'0',
+              (v&0x02)?'1':'0', (v&0x01)?'1':'0');
+
+            static const int bit_to_input[8] = {8, 6, 4, 2, 1, 3, 5, 7};
+
+            uint8_t changed = v ^ id(last_inputs);
+            for (int bit = 0; bit < 8; bit++) {
+              if (changed & (1 << bit)) {
+                bool pressed = !(v & (1 << bit));
+                int n = bit_to_input[bit];
+                ESP_LOGI("inputs", "    -> IN%d %s", n, pressed ? "APPUYE" : "relache");
+
+                switch (n) {
+                  case 1: id(bs_in1).publish_state(pressed); break;
+                  case 2: id(bs_in2).publish_state(pressed); break;
+                  case 3: id(bs_in3).publish_state(pressed); break;
+                  case 4: id(bs_in4).publish_state(pressed); break;
+                  case 5: id(bs_in5).publish_state(pressed); break;
+                  case 6: id(bs_in6).publish_state(pressed); break;
+                  case 7: id(bs_in7).publish_state(pressed); break;
+                  case 8: id(bs_in8).publish_state(pressed); break;
+                }
+
+                if (pressed) {
+                  id(relay_state) ^= (1 << (n - 1));
+                  bool ns = id(relay_state) & (1 << (n - 1));
+                  ESP_LOGI("inputs", "    -> Toggle Relais %d => %s", n, ns ? "ON" : "OFF");
+
+                  switch (n) {
+                    case 1: id(sw_relay1).publish_state(ns); break;
+                    case 2: id(sw_relay2).publish_state(ns); break;
+                    case 3: id(sw_relay3).publish_state(ns); break;
+                    case 4: id(sw_relay4).publish_state(ns); break;
+                    case 5: id(sw_relay5).publish_state(ns); break;
+                    case 6: id(sw_relay6).publish_state(ns); break;
+                    case 7: id(sw_relay7).publish_state(ns); break;
+                    case 8: id(sw_relay8).publish_state(ns); break;
+                  }
+                  digitalWrite(PIN_RCK, LOW);
+                  shiftOut(PIN_DATA_OUT, PIN_SCK, MSBFIRST, ~id(relay_state));
+                  digitalWrite(PIN_RCK, HIGH);
+                }
+              }
+            }
+            id(last_inputs) = v;
+          }
+
+switch:
+  - platform: template
+    name: "Relais 1"
+    id: sw_relay1
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 0);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 0);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 2"
+    id: sw_relay2
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 1);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 1);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 3"
+    id: sw_relay3
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 2);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 2);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 4"
+    id: sw_relay4
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 3);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 3);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 5"
+    id: sw_relay5
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 4);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 4);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 6"
+    id: sw_relay6
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 5);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 5);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 7"
+    id: sw_relay7
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 6);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 6);'
+      - script.execute: write_relays
+  - platform: template
+    name: "Relais 8"
+    id: sw_relay8
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: 'id(relay_state) |= (1 << 7);'
+      - script.execute: write_relays
+    turn_off_action:
+      - lambda: 'id(relay_state) &= ~(1 << 7);'
+      - script.execute: write_relays
+
+binary_sensor:
+  - platform: template
+    name: "Entree IN1"
+    id: bs_in1
+  - platform: template
+    name: "Entree IN2"
+    id: bs_in2
+  - platform: template
+    name: "Entree IN3"
+    id: bs_in3
+  - platform: template
+    name: "Entree IN4"
+    id: bs_in4
+  - platform: template
+    name: "Entree IN5"
+    id: bs_in5
+  - platform: template
+    name: "Entree IN6"
+    id: bs_in6
+  - platform: template
+    name: "Entree IN7"
+    id: bs_in7
+  - platform: template
+    name: "Entree IN8"
+    id: bs_in8
+
+button:
+  - platform: template
+    name: "TEST - Tous relais ON"
+    on_press:
+      - lambda: 'id(relay_state) = 0xFF;'
+      - script.execute: write_relays
+  - platform: template
+    name: "TEST - Tous relais OFF"
+    on_press:
+      - lambda: 'id(relay_state) = 0x00;'
+      - script.execute: write_relays
